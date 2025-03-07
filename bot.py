@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 
 class Config:
     TOKEN = os.environ.get("BOT_TOKEN")
-    ADMINS = ["725739479", ]  # ID администраторов
+    ADMINS = ["725739479", "693411987"]  # ID администраторов
     SUBSCRIBERS_FILE = "subscribers.txt"
     YOOKASSA_SHOP_ID = int(os.environ.get("YOOKASSA_SHOP_ID", 0))
     YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY")
@@ -123,6 +123,7 @@ class Form(StatesGroup):
     tariff = State()
     instruction = State()
     payment = State()
+    payment_confirmed = State()  # Новое состояние для отслеживания подтверждения оплаты
 
 # Функции для работы с подписчиками
 def add_subscriber(chat_id: int):
@@ -288,6 +289,7 @@ class TariffBot:
         """Обработчик выбора гражданства."""
         await state.update_data(citizenship=callback.data)
         await state.set_state(Form.operator)
+        data = await state.get_data()
         lang = data.get("lang", "ru")
         data = await state.get_data()
         await callback.message.edit_text(
@@ -344,6 +346,8 @@ class TariffBot:
                     media_group.append(types.InputMediaPhoto(
                         media=FSInputFile(image_path)
                     ))
+                
+                await callback.message.delete()
                 
                 # Отправляем медиагруппу
                 await callback.message.answer_media_group(media_group)
@@ -413,6 +417,10 @@ class TariffBot:
                     text = INSTRUCTIONS[data.get('citizenship', 'citizen_ru')][lang]['text']
                 keyboard = self._instruction_keyboard(lang)
             elif target_state == "payment":
+                # Проверяем, была ли уже подтверждена оплата
+                if await state.get_state() == Form.payment_confirmed:
+                    await callback.answer("Оплата уже подтверждена, код уже был выдан.", show_alert=True)
+                    return
                 new_state = Form.payment
                 text = LOCALES[lang]["payment"]
                 keyboard = self._payment_keyboard("", lang, "")
@@ -458,7 +466,7 @@ class TariffBot:
             if 'pic' in tariff:
                 image_path = os.path.join(Config.IMAGES_DIR, tariff['pic'])
                 if os.path.exists(image_path):
-                    # Отправляем картинку с текстовым описанием
+                    await callback.message.delete()
                     await callback.message.answer_photo(
                         FSInputFile(image_path),
                         caption=description_text,
@@ -529,24 +537,6 @@ class TariffBot:
         builder.adjust(1)
         return builder.as_markup()
 
-    def _payment_keyboard(self, payment_link: str, lang: str, tariff_id: str) -> InlineKeyboardMarkup:
-        """Клавиатура для оплаты."""
-        builder = InlineKeyboardBuilder()
-        builder.button(
-            text="💳 Оплатить" if lang == "ru" else "💳 To'lov" if lang == "uz" else "💳 Пардохт",
-            url=payment_link
-        )
-        builder.button(
-            text="✅ Проверить оплату" if lang == "ru" else "✅ To'lovni tekshirish" if lang == "uz" else "✅ Пардохтро тафтиш кунед",
-            callback_data="confirm_payment"
-        )
-        builder.button(
-            text=LOCALES[lang]["back"],
-            callback_data="back:tariff"
-        )
-        builder.adjust(1)
-        return builder.as_markup()
-
     async def process_instruction(self, callback: CallbackQuery, state: FSMContext):
         """Обработчик показа инструкций."""
         data = await state.get_data()
@@ -571,13 +561,14 @@ class TariffBot:
             text = "text"
         try:
             if os.path.exists(image_path):
+                await callback.message.delete()
                 await callback.message.answer_photo(
                     FSInputFile(image_path),
                     caption=INSTRUCTIONS[data.get('citizenship', 'citizen_ru')][lang][text] + "\n\nСкачайте приложение оператора\n" +  link_app + "\nНайдите ближайший офис\n" + offices,
                     reply_markup=self._payment_instruction_keyboard(lang, oper)
                 )
             else:
-                await callback.message.answer(INSTRUCTIONS[data.get('citizenship', 'citizen_ru')][lang][text] + "\n\nСкачайте приложение оператора\n" +  link_app + "\nНайдите ближайший офис\n" + offices, reply_markup=self._payment_instruction_keyboard(lang, oper))
+                await callback.message.edit_text(INSTRUCTIONS[data.get('citizenship', 'citizen_ru')][lang][text] + "\n\nСкачайте приложение оператора\n" +  link_app + "\nНайдите ближайший офис\n" + offices, reply_markup=self._payment_instruction_keyboard(lang, oper))
             
         except Exception as e:
             logging.error(f"Ошибка отправки фото: {e}")
@@ -633,12 +624,36 @@ class TariffBot:
         except Exception as e:
             logging.error(f"Payment creation error: {str(e)}")
             await callback.answer("Ошибка создания платежа", show_alert=True)
-
+    
+    def _payment_keyboard(self, payment_link: str, lang: str, tariff_id: str) -> InlineKeyboardMarkup:
+        """Клавиатура для оплаты."""
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text="💳 Оплатить" if lang == "ru" else "💳 To'lov" if lang == "uz" else "💳 Пардохт",
+            url=payment_link
+        )
+        builder.button(
+            text="✅ Проверить оплату" if lang == "ru" else "✅ To'lovni tekshirish" if lang == "uz" else "✅ Пардохтро тафтиш кунед",
+            callback_data="confirm_payment"
+        )
+        builder.button(
+            text=LOCALES[lang]["back"],
+            callback_data="back:tariff"
+        )
+        builder.adjust(1)
+        return builder.as_markup()
+    
     async def process_payment(self, callback: CallbackQuery, state: FSMContext):
         """Обработчик подтверждения оплаты."""
         data = await state.get_data()
         lang = data.get("lang", "ru")
         tariff = data.get("tariff")
+
+        # Проверяем, была ли уже подтверждена оплата
+        if await state.get_state() == Form.payment_confirmed:
+            await callback.answer("Оплата уже подтверждена, код уже был выдан.", show_alert=True)
+            return
+
         try:
             if data.get("operator", "megafon") != "sbermobile":
                 payment = Payment.find_one(data["payment_id"])
@@ -657,6 +672,9 @@ class TariffBot:
                     code = "good52"
                 number = "❌"
             if code:
+                await callback.message.edit_reply_markup(
+                    reply_markup=None
+                )
                 await self._update_statistics(tariff["id"], data.get("operator", "mts"), callback.from_user.id)
                 full_text = LOCALES[lang]["payment_success"].format(
                     code=code,
@@ -686,6 +704,9 @@ class TariffBot:
             logging.error(f"Payment processing error: {e}")
             error_text = LOCALES[lang].get("payment_error", "⛔ Ошибка обработки платежа")
             await callback.answer(error_text, show_alert=True)
+
+        # Устанавливаем состояние, что оплата подтверждена
+        await state.set_state(Form.payment_confirmed)
 
     def _restart_keyboard(self, lang: str) -> InlineKeyboardMarkup:
         """Клавиатура для перезапуска."""

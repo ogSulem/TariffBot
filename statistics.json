@@ -1,0 +1,16 @@
+{
+  "megafon8": {
+    "operator": "megafon",
+    "purchase_count": 2,
+    "users": [
+      725739479
+    ]
+  },
+  "mts4": {
+    "operator": "mts",
+    "purchase_count": 1,
+    "users": [
+      725739479
+    ]
+  }
+}
